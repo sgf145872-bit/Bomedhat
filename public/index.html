@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تطبيق صراحة خاص</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f0f2f5; }
+        .container { background-color: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); width: 90%; max-width: 500px; text-align: center; }
+        textarea { width: 100%; height: 100px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; resize: none; margin-bottom: 1rem; }
+        button { background-color: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 1rem; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #message { margin-top: 1rem; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>أرسل لي رسالة مجهولة</h1>
+        <textarea id="messageInput" placeholder="اكتب رسالتك هنا..."></textarea>
+        <button id="sendButton">إرسال</button>
+        <p id="statusMessage"></p>
+    </div>
+
+    <script>
+        document.getElementById('sendButton').addEventListener('click', async () => {
+            const message = document.getElementById('messageInput').value.trim();
+            const statusMessage = document.getElementById('statusMessage');
+            const sendButton = document.getElementById('sendButton');
+            
+            if (message.length === 0) {
+                statusMessage.textContent = 'الرسالة فارغة!';
+                statusMessage.style.color = 'red';
+                return;
+            }
+
+            sendButton.disabled = true;
+            statusMessage.textContent = 'جاري الإرسال...';
+            statusMessage.style.color = 'black';
+
+            try {
+                const response = await fetch('/api/send_message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: message })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    statusMessage.textContent = result.message;
+                    statusMessage.style.color = 'green';
+                    document.getElementById('messageInput').value = '';
+                } else {
+                    statusMessage.textContent = 'فشل الإرسال: ' + result.error;
+                    statusMessage.style.color = 'red';
+                }
+            } catch (error) {
+                statusMessage.textContent = 'حدث خطأ غير متوقع.';
+                statusMessage.style.color = 'red';
+            } finally {
+                sendButton.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
