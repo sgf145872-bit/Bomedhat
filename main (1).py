@@ -107,7 +107,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # إذا كان الرد على رسالة محولة
         if message.reply_to_message:
             replied_message = message.reply_to_message
-            if replied_message.forward_from:
+            if hasattr(replied_message, 'forward_from') and replied_message.forward_from:
                 # الرد على مستخدم مباشرة
                 target_user_id = replied_message.forward_from.id
                 try:
@@ -183,25 +183,34 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # إرسال الوسائط إلى المالك
     if owner_id:
         try:
+            caption = f"📎 وسائط من {user.mention_markdown()}\n\n{message.caption or ''}"
+            
             if message.photo:
                 await context.bot.send_photo(
                     chat_id=owner_id,
                     photo=message.photo[-1].file_id,
-                    caption=f"📸 صورة من {user.mention_markdown()}\n\n{message.caption or ''}",
+                    caption=caption,
                     parse_mode='Markdown'
                 )
             elif message.video:
                 await context.bot.send_video(
                     chat_id=owner_id,
                     video=message.video.file_id,
-                    caption=f"🎥 فيديو من {user.mention_markdown()}\n\n{message.caption or ''}",
+                    caption=caption,
                     parse_mode='Markdown'
                 )
             elif message.document:
                 await context.bot.send_document(
                     chat_id=owner_id,
                     document=message.document.file_id,
-                    caption=f"📄 ملف من {user.mention_markdown()}\n\n{message.caption or ''}",
+                    caption=caption,
+                    parse_mode='Markdown'
+                )
+            elif message.audio:
+                await context.bot.send_audio(
+                    chat_id=owner_id,
+                    audio=message.audio.file_id,
+                    caption=caption,
                     parse_mode='Markdown'
                 )
             
@@ -258,12 +267,17 @@ def main():
     # إنشاء التطبيق
     application = Application.builder().token(TOKEN).build()
     
-    # إضافة handlers
+    # إضافة handlers - التصحيح هنا
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.DOCUMENT, handle_media))
+    
+    # إضافة handlers للوسائط بشكل منفصل
+    application.add_handler(MessageHandler(filters.PHOTO, handle_media))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_media))
+    application.add_handler(MessageHandler(filters.DOCUMENT, handle_media))
+    application.add_handler(MessageHandler(filters.AUDIO, handle_media))
     
     # بدء البوت
     print("🤖 بوت التواصل يعمل...")
