@@ -172,7 +172,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("⚠️ لم يتم تعيين مالك بعد!")
 
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
     
@@ -180,45 +180,75 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == owner_id:
         return
     
-    # إرسال الوسائط إلى المالك
+    # إرسال الصور إلى المالك
     if owner_id:
         try:
-            caption = f"📎 وسائط من {user.mention_markdown()}\n\n{message.caption or ''}"
+            caption = f"📸 صورة من {user.mention_markdown()}\n\n{message.caption or ''}"
             
-            if message.photo:
-                await context.bot.send_photo(
-                    chat_id=owner_id,
-                    photo=message.photo[-1].file_id,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-            elif message.video:
-                await context.bot.send_video(
-                    chat_id=owner_id,
-                    video=message.video.file_id,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-            elif message.document:
-                await context.bot.send_document(
-                    chat_id=owner_id,
-                    document=message.document.file_id,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-            elif message.audio:
-                await context.bot.send_audio(
-                    chat_id=owner_id,
-                    audio=message.audio.file_id,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
+            await context.bot.send_photo(
+                chat_id=owner_id,
+                photo=message.photo[-1].file_id,
+                caption=caption,
+                parse_mode='Markdown'
+            )
             
-            await message.reply_text("✅ تم إرسال الوسائط إلى المالك")
+            await message.reply_text("✅ تم إرسال الصورة إلى المالك")
             
         except Exception as e:
-            await message.reply_text("❌ حدث خطأ في إرسال الوسائط")
-            logger.error(f"Error sending media to owner: {e}")
+            await message.reply_text("❌ حدث خطأ في إرسال الصورة")
+            logger.error(f"Error sending photo to owner: {e}")
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    
+    # تجاهل الوسائط من المالك
+    if user.id == owner_id:
+        return
+    
+    # إرسال الفيديو إلى المالك
+    if owner_id:
+        try:
+            caption = f"🎥 فيديو من {user.mention_markdown()}\n\n{message.caption or ''}"
+            
+            await context.bot.send_video(
+                chat_id=owner_id,
+                video=message.video.file_id,
+                caption=caption,
+                parse_mode='Markdown'
+            )
+            
+            await message.reply_text("✅ تم إرسال الفيديو إلى المالك")
+            
+        except Exception as e:
+            await message.reply_text("❌ حدث خطأ في إرسال الفيديو")
+            logger.error(f"Error sending video to owner: {e}")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    
+    # تجاهل الوسائط من المالك
+    if user.id == owner_id:
+        return
+    
+    # إرسال الملفات إلى المالك
+    if owner_id:
+        try:
+            caption = f"📄 ملف من {user.mention_markdown()}\n\n{message.caption or ''}"
+            
+            await context.bot.send_document(
+                chat_id=owner_id,
+                document=message.document.file_id,
+                caption=caption,
+                parse_mode='Markdown'
+            )
+            
+            await message.reply_text("✅ تم إرسال الملف إلى المالك")
+            
+        except Exception as e:
+            await message.reply_text("❌ حدث خطأ في إرسال الملف")
+            logger.error(f"Error sending document to owner: {e}")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر للبث الجماعي (للمالك فقط)"""
@@ -267,17 +297,16 @@ def main():
     # إنشاء التطبيق
     application = Application.builder().token(TOKEN).build()
     
-    # إضافة handlers - التصحيح هنا
+    # إضافة handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # إضافة handlers للوسائط بشكل منفصل
-    application.add_handler(MessageHandler(filters.PHOTO, handle_media))
-    application.add_handler(MessageHandler(filters.VIDEO, handle_media))
-    application.add_handler(MessageHandler(filters.DOCUMENT, handle_media))
-    application.add_handler(MessageHandler(filters.AUDIO, handle_media))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    application.add_handler(MessageHandler(filters.DOCUMENT, handle_document))
     
     # بدء البوت
     print("🤖 بوت التواصل يعمل...")
