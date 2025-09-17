@@ -1,5 +1,4 @@
-streamlit
-pandas
-numpy
-verify_email
-# أي حزم أخرى تستخدمها
+colorama==0.4.6
+tqdm==4.66.1
+verify-email==2.4.3
+Dnspython==2.8.0
