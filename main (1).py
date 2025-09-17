@@ -1,426 +1,275 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Gmail Generator & Verifier Tool for Streamlit
-Generate and verify random Gmail addresses with real-time console output
-"""
-
-import streamlit as st
-import argparse
-import random
-import string
-import json
-import time
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    MessageHandler, 
+    CallbackQueryHandler,
+    ContextTypes, 
+    filters
+)
 import os
-import sys
-import threading
-import queue
-from io import StringIO
-from verify_email import verify_email
-from tqdm import tqdm
-from colorama import init, Fore, Back, Style
+import json
 
-# Initialize colorama
-init(autoreset=True)
+# إعدادات التسجيل
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# إنشاء طابور لالتقاط output من الكونسول
-console_output = queue.Queue()
+# تخزين البيانات
+owner_id = None
+owner_username = None
+user_sessions = {}  # {user_id: {'message_id': message_id, 'owner_message_id': owner_message_id}}
 
-# نظام لإعادة توجيه output للطابور
-class StreamToQueue:
-    def __init__(self, queue):
-        self.queue = queue
+# ملف لتخزين البيانات
+DATA_FILE = "bot_data.json"
+
+def save_data():
+    """حفظ البيانات في ملف"""
+    data = {
+        'owner_id': owner_id,
+        'owner_username': owner_username,
+        'user_sessions': user_sessions
+    }
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f)
+
+def load_data():
+    """تحميل البيانات من ملف"""
+    global owner_id, owner_username, user_sessions
+    try:
+        with open(DATA_FILE, 'r') as f:
+            data = json.load(f)
+            owner_id = data.get('owner_id')
+            owner_username = data.get('owner_username')
+            user_sessions = data.get('user_sessions', {})
+    except FileNotFoundError:
+        # إذا لم يوجد ملف، نبدأ بقيم افتراضية
+        owner_id = None
+        owner_username = None
+        user_sessions = {}
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global owner_id, owner_username
+    
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    # إذا لم يتم تعيين مالك بعد، جعل هذا المستخدم المالك
+    if owner_id is None:
+        owner_id = user.id
+        owner_username = user.username or user.first_name
         
-    def write(self, text):
-        self.queue.put(text)
-        
-    def flush(self):
-        pass
-
-# استبدال sys.stdout لالتقاط output
-sys.stdout = StreamToQueue(console_output)
-sys.stderr = StreamToQueue(console_output)
-
-class ColorfulOutput:
-    """Class for colorful terminal output"""
-
-    @staticmethod
-    def header(text):
-        """Print header text"""
-        print(f"\n{Fore.CYAN}{Style.BRIGHT}╔{'═' * (len(text) + 2)}╗")
-        print(f"║ {text} ║")
-        print(f"╚{'═' * (len(text) + 2)}╝{Style.RESET_ALL}")
-
-    @staticmethod
-    def success(text):
-        """Print success text"""
-        print(f"{Fore.GREEN}✅ {text}{Style.RESET_ALL}")
-
-    @staticmethod
-    def error(text):
-        """Print error text"""
-        print(f"{Fore.RED}❌ {text}{Style.RESET_ALL}")
-
-    @staticmethod
-    def warning(text):
-        """Print warning text"""
-        print(f"{Fore.YELLOW}⚠️  {text}{Style.RESET_ALL}")
-
-    @staticmethod
-    def info(text):
-        """Print info text"""
-        print(f"{Fore.BLUE}ℹ️  {text}{Style.RESET_ALL}")
-
-    @staticmethod
-    def progress(text):
-        """Print progress text"""
-        print(f"{Fore.MAGENTA}🔄 {text}{Style.RESET_ALL}")
-
-    @staticmethod
-    def email(text, status):
-        """Print email with status color"""
-        if status == "valid":
-            print(f"{Fore.GREEN}📧 {text}{Style.RESET_ALL}")
-        elif status == "invalid":
-            print(f"{Fore.RED}📧 {text}{Style.RESET_ALL}")
+        await update.message.reply_text(
+            f"👑 مرحباً يا المالك! {user.mention_markdown()}\n\n"
+            f"✅ أنت الآن المالك الرسمي لهذا البوت\n"
+            f"📩 سيتم إرسال جميع رسائل المستخدمين إليك\n"
+            f"💬 يمكنك الرد على أي رسالة بالرد عليها مباشرة",
+            parse_mode='Markdown'
+        )
+        logger.info(f"تم تعيين المالك: {owner_username} (ID: {owner_id})")
+        save_data()
+    
+    else:
+        # إذا كان المستخدم هو المالك
+        if user.id == owner_id:
+            await update.message.reply_text(
+                f"مرحباً kembali يا المالك! 👑\n\n"
+                f"أنت مالك هذا البوت التواصلي\n"
+                f"يمكنك استقبال رسائل المستخدمين والرد عليها",
+                parse_mode='Markdown'
+            )
         else:
-            print(f"{Fore.YELLOW}📧 {text}{Style.RESET_ALL}")
-
-class GmailGeneratorVerifier:
-    def __init__(self, timeout=15):
-        """
-        Initialize Gmail generator and verifier
-
-        Args:
-            timeout (int): Verification timeout in seconds
-        """
-        self.timeout = timeout
-        
-        # استخدام session state لتخزين البيانات
-        if 'checked_emails' not in st.session_state:
-            st.session_state.checked_emails = set()
-        if 'valid_emails' not in st.session_state:
-            st.session_state.valid_emails = []
-        if 'processing' not in st.session_state:
-            st.session_state.processing = False
-        if 'stop_process' not in st.session_state:
-            st.session_state.stop_process = False
-
-        self.checked_emails = st.session_state.checked_emails
-        self.valid_emails = st.session_state.valid_emails
-
-    def generate_gmail(self, username_length=8, use_numbers=True, use_dots=True):
-        """
-        Generate random Gmail address
-
-        Args:
-            username_length (int): Username length
-            use_numbers (bool): Use numbers in username
-            use_dots (bool): Use dots in username
-
-        Returns:
-            str: Generated Gmail address
-        """
-        chars = string.ascii_lowercase
-        if use_numbers:
-            chars += string.digits
-
-        username = ''.join(random.choice(chars) for _ in range(username_length))
-
-        # Add dots randomly if enabled
-        if use_dots and len(username) > 3 and random.random() > 0.7:
-            dot_position = random.randint(1, len(username) - 2)
-            username = username[:dot_position] + '.' + username[dot_position:]
-
-        return f"{username}@gmail.com"
-
-    def is_valid_format(self, email):
-        """Check email format"""
-        import re
-        pattern = r'^[a-zA-Z0-9._%+-]+@gmail\.com$'
-        return re.match(pattern, email) is not None
-
-    def is_already_checked(self, email):
-        """Check if email was already verified"""
-        return email in self.checked_emails
-
-    def verify_email(self, email):
-        """
-        Verify Gmail address validity
-
-        Args:
-            email (str): Email address to verify
-
-        Returns:
-            tuple: (bool, str) Result and status message
-        """
-        try:
-            # Check format first
-            if not self.is_valid_format(email):
-                return False, "Invalid email format"
-
-            # Check if already verified
-            if self.is_already_checked(email):
-                return None, "Already checked"
-
-            ColorfulOutput.progress(f"Verifying: {email}")
-
-            # Save checked email (regardless of verification result)
-            self.checked_emails.add(email)
-            st.session_state.checked_emails = self.checked_emails
-
-            # Verify email using library
-            is_valid = verify_email(emails=email)
-
-            if is_valid:
-                email_data = {
-                    'email': email,
-                    'checked_at': time.strftime("%Y-%m-%d %H:%M:%S"),
-                    'type': 'gmail'
-                }
-                self.valid_emails.append(email_data)
-                st.session_state.valid_emails = self.valid_emails
-                return True, "Valid and available"
-            else:
-                return False, "Invalid or unavailable"
-
-        except Exception as e:
-            # Still save the email as checked even if verification fails
-            if not self.is_already_checked(email):
-                self.checked_emails.add(email)
-                st.session_state.checked_emails = self.checked_emails
-            return False, f"Verification error: {str(e)}"
-
-    def generate_and_verify_batch(self, count=10, delay=2):
-        """
-        Generate and verify batch of emails
-
-        Args:
-            count (int): Number of emails to generate and verify
-            delay (int): Delay between verifications in seconds
-        """
-        results = {
-            'valid': 0,
-            'invalid': 0,
-            'skipped': 0,
-            'errors': 0,
-            'total': count
-        }
-
-        ColorfulOutput.header("GMAIL GENERATION & VERIFICATION")
-        ColorfulOutput.info(f"Starting batch of {count} emails")
-        ColorfulOutput.info(f"Delay: {delay}s | Timeout: {self.timeout}s")
-
-        for i in range(count):
-            if st.session_state.stop_process:
-                ColorfulOutput.warning("Process stopped by user")
-                break
-                
-            # Generate new email
-            email = self.generate_gmail(
-                username_length=random.randint(6, 12),
-                use_numbers=random.choice([True, False]),
-                use_dots=random.choice([True, False])
+            # إذا كان مستخدم عادي
+            keyboard = [
+                [InlineKeyboardButton("📩 إرسال رسالة", callback_data='send_message')],
+                [InlineKeyboardButton("ℹ️ معلومات", callback_data='info')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                f"مرحباً {user.mention_markdown()}! 👋\n\n"
+                f"أنا بوت تواصل يمكنك من خلاله إرسال رسائل إلى المالك\n\n"
+                f"📨 فقط أرسل رسالتك وسأقوم بإرسالها إلى المالك\n"
+                f"🔄 يمكنك التواصل مع المالك عبر هذا البوت",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
             )
 
-            # Verify email
-            result, message = self.verify_email(email)
-
-            # Update results
-            if result is None:  # Skipped (already checked)
-                results['skipped'] += 1
-                ColorfulOutput.warning(f"Skipped: {email} ({message})")
-            elif result:  # Valid
-                results['valid'] += 1
-                ColorfulOutput.success(f"Valid: {email}")
-                ColorfulOutput.email(email, "valid")
-            else:  # Invalid or error
-                if "error" in message.lower():
-                    results['errors'] += 1
-                    ColorfulOutput.error(f"Error: {email} - {message}")
-                else:
-                    results['invalid'] += 1
-                    ColorfulOutput.error(f"Invalid: {email}")
-                ColorfulOutput.email(email, "invalid")
-
-            # Delay between operations
-            if i < count - 1 and not st.session_state.stop_process:
-                time.sleep(delay)
-
-        return results
-
-    def get_stats(self):
-        """Get statistics"""
-        total_checked = len(self.checked_emails)
-        total_valid = len(self.valid_emails)
-        success_rate = (total_valid / total_checked * 100) if total_checked > 0 else 0
-
-        return {
-            'total_checked': total_checked,
-            'total_valid': total_valid,
-            'success_rate': success_rate
-        }
-
-def print_banner():
-    """Print colorful banner"""
-    banner = f"""
-{Fore.RED}╔══════════════════════════════════════════════════════════════╗
-{Fore.RED}║{Fore.WHITE}          GMAIL GENERATOR & VERIFIER TOOL           {Fore.RED}║
-{Fore.RED}║{Fore.WHITE}      Generate and Verify Random Gmail Addresses     {Fore.RED}║
-{Fore.RED}╚══════════════════════════════════════════════════════════════╝
-{Fore.GREEN}🌟 Features:{Fore.WHITE}
-  • Random Gmail generation
-  • Email validation checking
-  • Progress tracking
-  • Colorful output
-  • Real-time console display
-{Fore.YELLOW}⚡ Running on Streamlit:{Fore.WHITE}
-  • Console output displayed below
-  • Results stored in session memory
-  • Stop/start functionality
-{Fore.CYAN}──────────────────────────────────────────────────────────────{Style.RESET_ALL}
-"""
-    print(banner)
-
-def process_emails(count, delay, timeout):
-    """Function to process emails in a separate thread"""
-    verifier = GmailGeneratorVerifier(timeout=timeout)
-    print_banner()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
     
-    # Show current statistics
-    stats = verifier.get_stats()
-    ColorfulOutput.header("CURRENT STATISTICS")
-    print(f"{Fore.WHITE}📊 Total Checked: {Fore.CYAN}{stats['total_checked']}")
-    print(f"{Fore.WHITE}✅ Total Valid: {Fore.GREEN}{stats['total_valid']}")
-    print(f"{Fore.WHITE}📈 Success Rate: {Fore.YELLOW}{stats['success_rate']:.2f}%")
+    # تجاهل الرسائل من المالك
+    if user.id == owner_id:
+        # إذا كان الرد على رسالة محولة
+        if message.reply_to_message:
+            replied_message = message.reply_to_message
+            if replied_message.forward_from:
+                # الرد على مستخدم مباشرة
+                target_user_id = replied_message.forward_from.id
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=f"📩 رد من المالك:\n\n{message.text}"
+                    )
+                    await message.reply_text("✅ تم إرسال الرد إلى المستخدم")
+                except Exception as e:
+                    await message.reply_text("❌ لا يمكن إرسال الرسالة، قد يكون المستخدم حظر البوت")
+        return
+    
+    # إذا كان المستخدم العادي يرسل رسالة
+    if owner_id:
+        try:
+            # إرسال الرسالة إلى المالك مع معلومات المستخدم
+            sent_message = await context.bot.send_message(
+                chat_id=owner_id,
+                text=f"📨 رسالة جديدة من {user.mention_markdown()}\n"
+                     f"🆔 ID: `{user.id}`\n"
+                     f"📛 الاسم: {user.full_name}\n"
+                     f"👤 المعرف: @{user.username if user.username else 'لا يوجد'}\n\n"
+                     f"💬 الرسالة:\n{message.text}",
+                parse_mode='Markdown'
+            )
+            
+            # حفظ معلومات الجلسة
+            user_sessions[user.id] = {
+                'message_id': message.message_id,
+                'owner_message_id': sent_message.message_id
+            }
+            save_data()
+            
+            await message.reply_text("✅ تم إرسال رسالتك إلى المالك")
+            
+        except Exception as e:
+            await message.reply_text("❌ حدث خطأ في إرسال الرسالة")
+            logger.error(f"Error sending message to owner: {e}")
+    else:
+        await message.reply_text("⚠️ لم يتم تعيين مالك بعد!")
 
-    ColorfulOutput.header("STARTING VERIFICATION PROCESS")
-    results = verifier.generate_and_verify_batch(count, delay)
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    
+    if query.data == 'send_message':
+        await query.edit_message_text(
+            f"💬 أرسل رسالتك الآن وسأقوم بإرسالها إلى المالك\n\n"
+            f"يمكنك كتابة أي رسالة تريد إرسالها"
+        )
+    elif query.data == 'info':
+        if owner_id:
+            await query.edit_message_text(
+                f"ℹ️ معلومات البوت:\n\n"
+                f"🤖 هذا بوت تواصل\n"
+                f"👑 المالك: @{owner_username}\n"
+                f"📨 أرسل أي رسالة وسيتم تحويلها للمالك\n"
+                f"↩️ المالك يمكنه الرد على رسائلك"
+            )
+        else:
+            await query.edit_message_text("⚠️ لم يتم تعيين مالك بعد!")
 
-    # Show final results
-    ColorfulOutput.header("FINAL RESULTS")
-    print(f"{Fore.GREEN}✅ Valid: {results['valid']}")
-    print(f"{Fore.RED}❌ Invalid: {results['invalid']}")
-    print(f"{Fore.YELLOW}⏭️  Skipped: {results['skipped']}")
-    print(f"{Fore.RED}🚫 Errors: {results['errors']}")
-    print(f"{Fore.WHITE}📊 Total: {results['total']}")
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    
+    # تجاهل الوسائط من المالك
+    if user.id == owner_id:
+        return
+    
+    # إرسال الوسائط إلى المالك
+    if owner_id:
+        try:
+            if message.photo:
+                await context.bot.send_photo(
+                    chat_id=owner_id,
+                    photo=message.photo[-1].file_id,
+                    caption=f"📸 صورة من {user.mention_markdown()}\n\n{message.caption or ''}",
+                    parse_mode='Markdown'
+                )
+            elif message.video:
+                await context.bot.send_video(
+                    chat_id=owner_id,
+                    video=message.video.file_id,
+                    caption=f"🎥 فيديو من {user.mention_markdown()}\n\n{message.caption or ''}",
+                    parse_mode='Markdown'
+                )
+            elif message.document:
+                await context.bot.send_document(
+                    chat_id=owner_id,
+                    document=message.document.file_id,
+                    caption=f"📄 ملف من {user.mention_markdown()}\n\n{message.caption or ''}",
+                    parse_mode='Markdown'
+                )
+            
+            await message.reply_text("✅ تم إرسال الوسائط إلى المالك")
+            
+        except Exception as e:
+            await message.reply_text("❌ حدث خطأ في إرسال الوسائط")
+            logger.error(f"Error sending media to owner: {e}")
 
-    # Show updated statistics
-    stats = verifier.get_stats()
-    ColorfulOutput.header("UPDATED STATISTICS")
-    print(f"{Fore.WHITE}📊 Total Checked: {Fore.CYAN}{stats['total_checked']}")
-    print(f"{Fore.WHITE}✅ Total Valid: {Fore.GREEN}{stats['total_valid']}")
-    print(f"{Fore.WHITE}📈 Success Rate: {Fore.YELLOW}{stats['success_rate']:.2f}%")
-
-    # Show some valid emails
-    if verifier.valid_emails:
-        ColorfulOutput.header("RECENT VALID EMAILS")
-        recent_emails = verifier.valid_emails[-5:]
-        for i, email_data in enumerate(recent_emails, 1):
-            print(f"{Fore.GREEN}{i}. {email_data['email']} {Fore.WHITE}({email_data['checked_at']})")
-
-    ColorfulOutput.success("Process completed successfully!")
-    st.session_state.processing = False
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر للبث الجماعي (للمالك فقط)"""
+    user = update.effective_user
+    
+    if user.id != owner_id:
+        await update.message.reply_text("⛔ ليس لديك صلاحية استخدام هذا الأمر!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📢 usage: /broadcast <message>")
+        return
+    
+    message_text = ' '.join(context.args)
+    success_count = 0
+    fail_count = 0
+    
+    # الحصول على جميع المستخدمين الذين تفاعلوا مع البوت
+    user_ids = list(user_sessions.keys())
+    
+    for user_id in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"📢 إعلان من المالك:\n\n{message_text}"
+            )
+            success_count += 1
+        except:
+            fail_count += 1
+    
+    await update.message.reply_text(
+        f"✅ تم إرسال الإعلان:\n"
+        f"✅ نجح: {success_count}\n"
+        f"❌ فشل: {fail_count}"
+    )
 
 def main():
-    """Main Streamlit app"""
-    st.set_page_config(
-        page_title="Gmail Generator & Verifier",
-        page_icon="📧",
-        layout="wide"
-    )
+    # تحميل البيانات المحفوظة
+    load_data()
     
-    st.title("📧 Gmail Generator & Verifier")
-    st.markdown("Generate and verify random Gmail addresses with real-time console output")
+    # احصل على التوكن
+    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    if not TOKEN:
+        TOKEN = "8097867469:AAFaAjWAOh_LgGHamjh5uUoKWLmYhNEgXpc"  # استبدل هذا بتوكن بوتك
     
-    # Sidebar controls
-    with st.sidebar:
-        st.header("Settings")
-        count = st.slider("Number of emails", 10, 1000, 100)
-        delay = st.slider("Delay between emails (seconds)", 1, 10, 2)
-        timeout = st.slider("Verification timeout (seconds)", 5, 30, 15)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Start Processing", type="primary") and not st.session_state.get('processing', False):
-                st.session_state.processing = True
-                st.session_state.stop_process = False
-                # Start processing in a separate thread
-                thread = threading.Thread(
-                    target=process_emails, 
-                    args=(count, delay, timeout)
-                )
-                thread.start()
-                
-        with col2:
-            if st.button("Stop Processing", type="secondary"):
-                st.session_state.stop_process = True
-                
-        # Display statistics
-        st.header("Statistics")
-        if 'valid_emails' in st.session_state:
-            total_checked = len(st.session_state.checked_emails)
-            total_valid = len(st.session_state.valid_emails)
-            success_rate = (total_valid / total_checked * 100) if total_checked > 0 else 0
-            
-            st.metric("Total Emails Checked", total_checked)
-            st.metric("Valid Emails Found", total_valid)
-            st.metric("Success Rate", f"{success_rate:.2f}%")
-            
-            if total_valid > 0:
-                st.subheader("Recent Valid Emails")
-                for email_data in st.session_state.valid_emails[-5:]:
-                    st.code(f"{email_data['email']} - {email_data['checked_at']}")
+    # إنشاء التطبيق
+    application = Application.builder().token(TOKEN).build()
     
-    # Console output display
-    st.header("Console Output")
-    console_placeholder = st.empty()
+    # إضافة handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.DOCUMENT, handle_media))
     
-    # Update console output in real-time
-    if st.session_state.get('processing', False):
-        status_text = st.empty()
-        status_text.info("🔄 Processing emails...")
-        
-        console_content = ""
-        while st.session_state.get('processing', False):
-            try:
-                # Get new console output
-                while not console_output.empty():
-                    console_content += console_output.get_nowait()
-                
-                # Update console display
-                with console_placeholder:
-                    st.text_area("Console", console_content, height=400, key="console_output")
-                
-                time.sleep(0.5)
-                
-            except:
-                break
-                
-        status_text.empty()
-    else:
-        # Display static console content when not processing
-        console_content = "Console output will appear here when processing starts..."
-        with console_placeholder:
-            st.text_area("Console", console_content, height=400, key="console_output")
+    # بدء البوت
+    print("🤖 بوت التواصل يعمل...")
+    print(f"👑 المالك الحالي: {owner_username} (ID: {owner_id})" if owner_id else "⚠️ لم يتم تعيين مالك بعد")
     
-    # Display valid emails in main area
-    if st.session_state.get('valid_emails', []):
-        st.header("Valid Emails Found")
-        valid_emails = [email_data['email'] for email_data in st.session_state.valid_emails]
-        
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.dataframe(valid_emails, use_container_width=True)
-        
-        with col2:
-            st.download_button(
-                label="Download Valid Emails",
-                data="\n".join(valid_emails),
-                file_name="valid_emails.txt",
-                mime="text/plain"
-            )
+    application.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
