@@ -1,0 +1,5 @@
+streamlit
+pandas
+numpy
+verify_email
+# أي حزم أخرى تستخدمها
